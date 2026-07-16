@@ -243,7 +243,8 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
       // +32: shared channel setup, config-schema, policy, and status helpers.
       // +2: shared channel replay-guard factory and claim handle.
       // Harvest: retired AudioConfig type -1.
-      7985,
+      // +1: selectPreferredLocalModelId shares app-guided local model ranking across providers.
+      7986,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -264,7 +265,8 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
       // +1: shared speech-provider API key resolver.
       // +24: shared channel setup, config-schema, policy, and status helpers.
       // +1: shared channel replay-guard factory.
-      4465,
+      // +1: selectPreferredLocalModelId shares app-guided local model ranking across providers.
+      4466,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(
