@@ -57,6 +57,7 @@ const MAX_SEARCH_LENGTH = 500;
 const MAX_CURSOR_LENGTH = 256;
 
 const MAX_CATALOG_DISCOVERY_FILES = 10_000;
+const MAX_CATALOG_DISCOVERY_CACHE_ENTRIES = 20_000;
 const CLAUDE_METADATA_PREFIX_BYTES = 1024 * 1024;
 const CLAUDE_METADATA_READ_CHUNK_BYTES = 16 * 1024;
 const MAX_CATALOG_METADATA_SCAN_BYTES = 64 * 1024 * 1024;
@@ -97,6 +98,35 @@ type DesktopSessionMetadata = {
 type CatalogRecord = ClaudeSessionCatalogSession & {
   filePath: string;
 };
+
+type CatalogDiscoveryCacheEntry = {
+  mtimeMs: number;
+  size: number;
+  // ctime bumps on chmod/chown/rename even when content (mtime+size) is unchanged, so keying on
+  // it invalidates the cache after a permission change and re-attempts the open (which then fails
+  // and omits the file, matching the pre-cache behavior).
+  ctimeMs: number;
+  record: CatalogRecord | null;
+  sidechain: boolean;
+};
+
+const catalogDiscoveryCache = new Map<string, CatalogDiscoveryCacheEntry>();
+
+export function resetClaudeSessionCatalogCacheForTest(): void {
+  catalogDiscoveryCache.clear();
+}
+
+function cacheCatalogDiscovery(filePath: string, entry: CatalogDiscoveryCacheEntry): void {
+  catalogDiscoveryCache.delete(filePath);
+  catalogDiscoveryCache.set(filePath, entry);
+  while (catalogDiscoveryCache.size > MAX_CATALOG_DISCOVERY_CACHE_ENTRIES) {
+    const oldestPath = catalogDiscoveryCache.keys().next().value;
+    if (oldestPath === undefined) {
+      break;
+    }
+    catalogDiscoveryCache.delete(oldestPath);
+  }
+}
 
 function optionalString(value: unknown, maxLength = MAX_STRING_LENGTH): string | undefined {
   if (typeof value !== "string") {
@@ -302,11 +332,18 @@ async function discoverCliRecords(
   const root = projectsDir(homeDir);
   const resolvedRoot = await fs.realpath(root).catch(() => undefined);
   if (!resolvedRoot) {
+    for (const cachedPath of catalogDiscoveryCache.keys()) {
+      if (isWithin(root, cachedPath)) {
+        catalogDiscoveryCache.delete(cachedPath);
+      }
+    }
     return;
   }
   let discoveredFiles = 0;
   let scannedBytes = 0;
-  for (const projectDir of await childDirectories(root)) {
+  let truncated = false;
+  const seenFilePaths = new Set<string>();
+  scan: for (const projectDir of await childDirectories(root)) {
     let names: string[];
     try {
       names = await fs.readdir(projectDir);
@@ -314,8 +351,12 @@ async function discoverCliRecords(
       continue;
     }
     for (const name of names) {
-      if (!name.endsWith(".jsonl") || discoveredFiles >= MAX_CATALOG_DISCOVERY_FILES) {
+      if (!name.endsWith(".jsonl")) {
         continue;
+      }
+      if (discoveredFiles >= MAX_CATALOG_DISCOVERY_FILES) {
+        truncated = true;
+        break scan;
       }
       discoveredFiles += 1;
       const sessionId = name.slice(0, -".jsonl".length);
@@ -331,10 +372,35 @@ async function discoverCliRecords(
       if (!filePath) {
         continue;
       }
+      seenFilePaths.add(filePath);
+      const fileStat = await fs.stat(filePath).catch(() => undefined);
+      if (!fileStat?.isFile()) {
+        continue;
+      }
+      const cached = catalogDiscoveryCache.get(filePath);
+      // Claude transcripts only append while active, then stay static; matching mtime and size
+      // therefore means their prefix-derived metadata is unchanged. Same-size, same-mtime
+      // replacement is not a Claude CLI write mode.
+      if (
+        cached &&
+        cached.mtimeMs === fileStat.mtimeMs &&
+        cached.size === fileStat.size &&
+        cached.ctimeMs === fileStat.ctimeMs
+      ) {
+        if (cached.sidechain) {
+          sidechainIds.add(sessionId);
+        }
+        if (cached.record) {
+          records.set(sessionId, cached.record);
+        }
+        // Cache hits read no transcript bytes, so they do not consume the scan byte budget.
+        continue;
+      }
       const handle = await fs.open(filePath, "r").catch(() => undefined);
       if (!handle) {
         continue;
       }
+      let cacheable = false;
       try {
         const stat = await handle.stat();
         let aiTitle: string | undefined;
@@ -426,15 +492,32 @@ async function discoverCliRecords(
         if (!stopFile && fileOffset >= stat.size && pending.length > 0) {
           inspectLine(pending);
         }
+        cacheable =
+          stopFile || fileOffset >= stat.size || fileOffset >= CLAUDE_METADATA_PREFIX_BYTES;
       } finally {
         await handle.close();
       }
+      // Negative and sidechain-only results are cached too; unchanged files should not be reparsed.
+      if (cacheable) {
+        cacheCatalogDiscovery(filePath, {
+          mtimeMs: fileStat.mtimeMs,
+          size: fileStat.size,
+          ctimeMs: fileStat.ctimeMs,
+          record: records.get(sessionId) ?? null,
+          sidechain: sidechainIds.has(sessionId),
+        });
+      }
       if (scannedBytes >= MAX_CATALOG_METADATA_SCAN_BYTES) {
-        return;
+        truncated = true;
+        break scan;
       }
     }
-    if (discoveredFiles >= MAX_CATALOG_DISCOVERY_FILES) {
-      break;
+  }
+  if (!truncated) {
+    for (const cachedPath of catalogDiscoveryCache.keys()) {
+      if (isWithin(resolvedRoot, cachedPath) && !seenFilePaths.has(cachedPath)) {
+        catalogDiscoveryCache.delete(cachedPath);
+      }
     }
   }
 }
