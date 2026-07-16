@@ -159,8 +159,9 @@ const defaultPublicDeprecatedExportsByEntrypointBudget = Object.freeze({
   "channel-lifecycle": 23,
   // Registry sweep: 77 packages, zero fetch failures; channel-ingress and dead aliases
   // had zero consumers.
-  "channel-message": 230,
-  "channel-message-runtime": 227,
+  // +11 each: durable channel-ingress drain seam (drain/lifecycle/claim/retry) mirrored by compat (#108656).
+  "channel-message": 241,
+  "channel-message-runtime": 238,
   "channel-pairing-paths": 1,
   // Deprecated pairing/conversation exports from the SQLite pairing migration
   // landed on main (#105802) without entrypoint pins; not touched by this PR.
@@ -238,7 +239,9 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
       // proxy stream API and codex marker/scaffold pins retained.
       // +2: generic channel retry runner and Retry-After parser.
       // +1: shared speech-provider API key resolver.
-      7952,
+      // +36: narrowed durable channel-ingress drain seam — factory, lifecycle binding,
+      // tuning constants, and telegram-consumed claim helpers with compat mirrors (#108656).
+      7988,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -257,7 +260,8 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
       // Used-union narrowing of the 31 wildcard barrels.
       // +2: generic channel retry runner and Retry-After parser.
       // +1: shared speech-provider API key resolver.
-      4440,
+      // +18: narrowed drain seam functions and compat mirrors (#108656).
+      4458,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(
@@ -271,7 +275,9 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
       // +8: channel-outbound plan pins mirrored through deprecated barrels.
       // Used-union narrowing drops inherited deprecated exports.
       // +1: Telegram runner alias retained for plugin SDK compatibility.
-      2978,
+      // +24: narrowed drain seam compat mirrors in the channel-message
+      // deprecation-window barrels (#108656).
+      3002,
       env,
     ),
     publicWildcardReexports: readPluginSdkSurfaceBudgetEnv(
